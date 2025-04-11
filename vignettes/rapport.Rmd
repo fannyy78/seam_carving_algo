@@ -1,0 +1,490 @@
+---
+title: "Rapport sur le Seam Carving"
+author: "Analyse Algorithmique"
+date: "11 avril 2025"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(imager)
+library(ggplot2)
+library(microbenchmark)
+library(M2algorithmique)
+library(Rcpp)
+```
+
+```{r}
+devtools::document()
+devtools::load_all()
+tools::showNonASCIIfile("R/image_reduction.R")
+```
+
+
+```{r}
+im <- load.example("parrots")
+plot(im, main = "Image originale")
+n_seams = 50
+```
+A) Présentation du problème
+Le Seam Carving est une technique de redimensionnement d'image qui préserve les éléments importants tout en réduisant la taille. Contrairement aux méthodes classiques comme le rognage ou le redimensionnement uniforme, le Seam Carving identifie et supprime des "coutures" (seams) - des chemins de pixels connectés traversant l'image - qui contiennent le moins d'information visuelle importante.
+
+Ce que nous cherchons à résoudre :
+
+- Redimensionner des images en préservant leurs caractéristiques visuelles importantes
+- Supprimer intelligemment du contenu peu important (zones de faible énergie)
+- Éviter la distorsion des objets principaux de l'image.
+
+B) Explication de la difficulté algorithmique
+
+1) Problème combinatoire
+Le Seam Carving présente une difficulté combinatoire significative :
+
+Pour une image de largeur W et hauteur H, il existe un nombre exponentiel de chemins possibles traversant l'image
+Chaque pixel peut se connecter à 3 pixels adjacents sur la ligne suivante
+Le nombre total de chemins possibles est de l'ordre de 3^H
+Pour une image modeste de 500 pixels de hauteur, cela représente environ 3^500 chemins potentiels
+
+2) La solution naïve qui en découle, ou l'approche naïve (gloutonne) consiste à :
+
+- Calculer l'énergie de chaque pixel (via gradients)
+- Pour chaque colonne possible de départ, tracer un chemin en descendant et en choisissant la direction de moindre énergie localement
+- Comparer l'énergie totale de tous les chemins possibles
+- Choisir et supprimer le chemin de moindre énergie totale
+
+
+Code pour calculer l'énergie (méthode naïve) en R
+```{r}
+compute_energy <- function(gray_img) {
+  gx <- imgradient(gray_img, "x")
+  gy <- imgradient(gray_img, "y")
+  energy <- sqrt(gx^2 + gy^2)
+  return(energy)
+}
+gray_im <- grayscale(im)
+energy <- compute_energy(gray_im)
+
+plot(energy, main = "Carte d'énergie de l'image")
+
+
+```
+Trace d'une couture verticale naïve
+L'algorithme naïf ne prend pas en compte les connexions locales et prend le chemin le plus simple sans optimiser la recherche. Cela conduit à une recherche exhaustive de la couture, en explorant les valeurs d'énergie dans chaque direction.
+
+```{r}
+trace_greedy_seam <- function(energy_mat, start_col, penalty = 0) {
+  h <- nrow(energy_mat)
+  w <- ncol(energy_mat)
+  seam <- integer(h)
+  seam[1] <- start_col
+
+  for (i in 2:h) {
+    prev_col <- seam[i - 1]
+    values <- c(
+      if (prev_col > 1) energy_mat[i, prev_col - 1] + penalty else Inf,
+      energy_mat[i, prev_col],
+      if (prev_col < w) energy_mat[i, prev_col + 1] + penalty else Inf
+    )
+    offset <- which.min(values) - 2
+    seam[i] <- prev_col + offset
+  }
+  return(seam)
+}
+
+```
+Suppression d'une couture verticale naïve
+```{r}
+remove_vertical_seam <- function(im, seam) {
+  im_array <- as.array(im)
+  w <- dim(im_array)[1]
+  h <- dim(im_array)[2]
+  c <- dim(im_array)[4]
+
+  new_array <- array(0, dim = c(w - 1, h, 1, c))
+
+  for (y in 1:h) {
+    col <- seam[y]
+    keep_cols <- setdiff(1:w, col)
+    for (ch in 1:c) {
+      new_array[, y, 1, ch] <- im_array[keep_cols, y, 1, ch]
+    }
+  }
+
+  return(as.cimg(new_array))
+}
+
+
+```
+
+```{r}
+seam_carving <- function(im, n_seams) {
+  for (step in 1:n_seams) {
+    cat("Suppression seam", step, "\n")
+    gray <- grayscale(im)
+    energy <- compute_energy(gray)
+    energy_mat <- t(as.matrix(energy))
+
+    h <- nrow(energy_mat)
+    w <- ncol(energy_mat)
+
+    all_seams <- vector("list", w)
+    for (col in 1:w) {
+      all_seams[[col]] <- trace_greedy_seam(energy_mat, col)
+    }
+
+    seam_energies <- sapply(all_seams, function(seam) {
+      sum(mapply(function(i, j) energy_mat[i, j], 1:h, seam))
+    })
+    best_idx <- which.min(seam_energies)
+    best_seam <- all_seams[[best_idx]]
+
+    im <- remove_vertical_seam(im, best_seam)
+  }
+  return(im)
+}
+```
+
+
+Réduction de l'image avec l'algorithme naïf
+
+```{r}
+reduce_image_seams <- function(im, n_seams) {
+  cat("Dimensions AVANT reduction :", dim(im), "\n")
+  im_reduite <- seam_carving(im, n_seams)
+  cat("Dimensions APRES reduction :", dim(im_reduite), "\n")
+
+  par(mfrow = c(1, 2))
+  plot(im, main = "Image originale")
+  plot(im_reduite, main = paste("Image reduite (", n_seams, "seams)", sep = ""))
+
+  return(im_reduite)
+}
+
+```
+
+Test de l'algorithme naïf
+```{r}
+im_reduite <- reduce_image_seams(im, n_seams)
+plot(im_reduite)
+```
+Comparaison avec C++ (Optimisation avec Rcpp)
+
+Bien que l'implémentation naïve en R fonctionne, elle n'est pas optimale en termes de performances, surtout pour des images de grande taille ou lorsqu'un grand nombre de seams doit être supprimé. Pour surmonter ce problème, nous pouvons recourir à une implémentation en C++ à l'aide du package M2Algorithme, qui offre une exécution plus rapide grâce à la nature compilée du C++.
+
+
+```{r}
+im_reduite <- greedy_carving_cpp(im, n_seams)
+plot(im_reduite)
+```
+3) Limite avec R et C++ sur la taille n du problème
+La solution naïve devient rapidement impraticable :
+
+Le temps de calcul croît exponentiellement avec la taille de l'image
+Pour des images de grande taille, le temps d'exécution dépasse rapidement 5 minutes
+L'implémentation en R est particulièrement lente en raison de sa nature interprétée
+Même l'implémentation en C++ de l'algorithme naïf se heurte à des limites de performance pour des images de taille moyenne à grande
+
+C) Solution améliorée moderne
+
+1) Présentation de la stratégie algorithmique
+La programmation dynamique offre une solution élégante :
+
+- Calculer l'énergie de chaque pixel comme dans l'approche naïve
+- Construire une matrice d'énergie cumulative de haut en bas, où chaque cellule représente l'énergie minimale pour atteindre ce pixel depuis le haut de l'image
+
+
+Version dynamique code en R
+1. Calcul de l'énergie dynamique d'une image
+```{r}
+#' Calcul de l'energie dynamique d'une image
+#'
+#' @param gray_img Image en niveaux de gris (cimg)
+#' @return Image d'energie (cimg)
+#' @export
+compute_dynamic_energy <- function(gray_img) {
+  gx <- imgradient(gray_img, "x")  # Gradient de l'image dans la direction x
+  gy <- imgradient(gray_img, "y")  # Gradient de l'image dans la direction y
+  energy <- sqrt(gx^2 + gy^2)     # L'énergie est la somme des carrés des gradients dans x et y
+  return(energy)
+}
+
+```
+
+But : Cette fonction prend en entrée une image en niveaux de gris (grayscale) et calcule l'énergie de chaque pixel. Le gradient est utilisé pour estimer la variation de l'intensité de l'image à chaque pixel. L'énergie est plus élevée là où les changements d'intensité sont plus importants, ce qui représente les bords de l'image.
+
+Sortie : Une image d'énergie, où chaque pixel représente l'énergie de ce pixel par rapport à son voisinage.
+
+2. Calcul de la matrice d'énergie cumulative dynamique
+Cette fonction calcule la matrice d'énergie cumulative en utilisant une approche de programmation dynamique.
+```{r}
+#' Calcule la matrice cumulative d'energie dynamique
+#'
+#' @param energy_mat Matrice d'energie (h x w)
+#' @return Matrice cumulative (h x w)
+#' @export
+cumulative_dynamic_energy <- function(energy_mat) {
+  h <- nrow(energy_mat)  # Hauteur de l'image
+  w <- ncol(energy_mat)  # Largeur de l'image
+  cum_energy <- energy_mat  # Initialiser la matrice cumulative avec l'énergie initiale
+
+  # Calcul de l'énergie cumulative
+  for (i in 2:h) {
+    for (j in 1:w) {
+      left   <- if (j > 1) cum_energy[i - 1, j - 1] else Inf  # Cumul gauche
+      middle <- cum_energy[i - 1, j]  # Cumul du milieu
+      right  <- if (j < w) cum_energy[i - 1, j + 1] else Inf  # Cumul droit
+      cum_energy[i, j] <- energy_mat[i, j] + min(left, middle, right)  # Ajouter l'énergie du pixel à l'énergie minimale du voisinage
+    }
+  }
+  return(cum_energy)  # Retourner la matrice d'énergie cumulative
+}
+
+```
+
+But : Cette fonction calcule l'énergie cumulative à chaque pixel de l'image en remontant la matrice d'énergie. Elle utilise les résultats précédents pour minimiser le coût d'énergie en tenant compte des pixels voisins (gauche, centre, droite).
+
+Méthode : Pour chaque pixel, on prend l'énergie minimale parmi les trois pixels voisins dans la ligne précédente (gauche, centre, droite) et on l'ajoute à l'énergie du pixel courant.
+
+
+3. Trouver la seam minimale dynamique
+Cette fonction identifie la seam (ou couture) de coût minimal en partant de la dernière ligne et en remontant vers le haut, en suivant les valeurs d'énergie cumulée.
+```{r}
+#' Retrouve la seam minimale dynamique
+#'
+#' @param cum_energy Matrice cumulative d'energie (h x w)
+#' @return Vecteur (longueur h) representant la seam
+#' @export
+find_dynamic_seam <- function(cum_energy) {
+  h <- nrow(cum_energy)  # Hauteur de l'image
+  w <- ncol(cum_energy)  # Largeur de l'image
+  seam <- integer(h)  # Vecteur pour stocker les indices de la seam
+  seam[h] <- which.min(cum_energy[h, ])  # Trouver la colonne avec l'énergie minimale dans la dernière ligne
+
+  # Remonter à partir de la dernière ligne pour retrouver la seam optimale
+  for (i in (h - 1):1) {
+    prev_col <- seam[i + 1]  # Récupérer la colonne de la ligne précédente
+    options <- c(
+      if (prev_col > 1) cum_energy[i, prev_col - 1] else Inf,  # Option gauche
+      cum_energy[i, prev_col],  # Option centrale
+      if (prev_col < w) cum_energy[i, prev_col + 1] else Inf   # Option droite
+    )
+    offset <- which.min(options) - 2  # Choisir l'option avec l'énergie minimale
+    seam[i] <- prev_col + offset  # Mettre à jour la colonne de la seam
+  }
+  return(seam)  # Retourner la seam trouvée
+}
+
+```
+
+But : Cette fonction remonte la matrice d'énergie cumulative pour trouver la seam (couture) avec le coût d'énergie minimal. La couture est représentée par un vecteur d'indices de colonnes.
+
+Méthode : On commence par la dernière ligne, on trouve la colonne avec le coût minimal, puis on remonte ligne par ligne en choisissant à chaque étape le voisin de la colonne précédente qui minimise l'énergie.
+
+4. Supprimer une couture verticale dynamique
+Cette fonction supprime la couture identifiée dans l'image en réorganisant les pixels.
+```{r}
+#' Supprime une couture verticale dynamique
+#'
+#' @param im Image (objet `cimg`)
+#' @param seam Vecteur des indices de colonnes a supprimer
+#' @return Image modifiee (objet `cimg`)
+#' @export
+remove_dynamic_vertical_seam <- function(im, seam) {
+  im_array <- as.array(im)  # Convertir l'image en tableau
+  w <- dim(im_array)[1]  # Largeur de l'image
+  h <- dim(im_array)[2]  # Hauteur de l'image
+  c <- dim(im_array)[4]  # Nombre de canaux (couleurs)
+
+  new_array <- array(0, dim = c(w - 1, h, 1, c))  # Créer un nouveau tableau pour l'image modifiée
+
+  # Supprimer la colonne correspondant à la seam
+  for (y in 1:h) {
+    col <- seam[y]  # Récupérer l'indice de la colonne à supprimer
+    keep_cols <- setdiff(1:w, col)  # Trouver les colonnes à garder
+    for (ch in 1:c) {
+      new_array[, y, 1, ch] <- im_array[keep_cols, y, 1, ch]  # Copier les pixels restants
+    }
+  }
+
+  return(as.cimg(new_array))  # Retourner l'image modifiée
+}
+
+```
+
+But : Cette fonction supprime la colonne correspondant à la seam de l'image en créant une nouvelle image sans cette colonne.
+
+Méthode : Pour chaque ligne, elle supprime le pixel de la colonne correspondante à la seam, puis réorganise les pixels restants dans un nouveau tableau.
+
+5. Réduction dynamique de l'image par seam carving
+Cette fonction effectue la réduction de l'image en supprimant un nombre spécifié de coutures.
+```{r}
+#' Reduction d'image par seam carving dynamique
+#'
+#' @param im Image a reduire (objet `cimg`)
+#' @param n_seams Nombre de coutures a supprimer
+#'
+#' @return Image reduite (objet `cimg`)
+#' @export
+reduce_dynamic_image_seams <- function(im, n_seams) {
+  par(mfrow = c(1, 2))  # Affichage avant/apres
+  plot(im, main = "Image originale")
+
+  for (i in 1:n_seams) {
+    cat("Suppression seam dynamique", i, "\n")
+    gray <- grayscale(im)  # Convertir l'image en niveaux de gris
+    energy <- compute_dynamic_energy(gray)  # Calculer l'énergie
+    energy_mat <- t(as.matrix(energy))  # Convertir l'énergie en matrice
+
+    cum_energy <- cumulative_dynamic_energy(energy_mat)  # Calculer l'énergie cumulative
+    best_seam <- find_dynamic_seam(cum_energy)  # Trouver la seam minimale
+    im <- remove_dynamic_vertical_seam(im, best_seam)  # Supprimer la seam
+  }
+
+  plot(im, main = paste("Image apres reduction -", n_seams, "seams supprimees"))
+  return(im)  # Retourner l'image réduite
+}
+
+```
+But : Cette fonction supprime un nombre spécifié de coutures (seams) de l'image. Elle effectue les étapes suivantes :
+
+Conversion de l'image en niveaux de gris.
+
+Calcul de l'énergie dynamique de l'image.
+
+Calcul de l'énergie cumulative.
+
+Identification de la seam minimale à chaque étape.
+
+Suppression de la seam et répétition du processus pour le nombre spécifié de coutures.
+
+Affichage : Affiche l'image avant et après la réduction pour visualiser les effets de l'algorithme.
+
+```{r}
+
+im_reduite <- reduce_dynamic_image_seams(im, n_seams)
+```
+
+
+Maintenant on fait avec C++ en important le package.
+
+```{r}
+im_reduite <- seam_carving_dp(im, n_seams)
+
+plot(im_reduite, main = "Image réduite (Programmation Dynamique C++)")
+```
+
+
+On observe encore que la compilation avec C++ est plus rapide. 
+
+
+```{r}
+# Charger l'exemple d'image
+im <- load.example("parrots")
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme naïf en R
+measure_naive_R <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- reduce_image_seams(im, n_seams)
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme naïf en C++
+measure_naive_CPP <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- greedy_carving_cpp(im, n_seams)
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme dynamique en R
+measure_dynamic_R <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- reduce_dynamic_image_seams(im, n_seams)
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme dynamique en C++
+measure_dynamic_CPP <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- seam_carving_dp(im, n_seams)
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Simulation des tailles d'image
+sizes <- c(100, 200, 300, 400, 500)
+
+# Fixer un nombre de seams constant pour toutes les méthodes
+n_seams <- 20
+
+# Mesurer les temps d'exécution pour les algorithmes naïf et dynamique en R et C++
+times_naive_R <- sapply(sizes, function(size) measure_naive_R(im, n_seams))
+times_naive_CPP <- sapply(sizes, function(size) measure_naive_CPP(im, n_seams))
+times_dynamic_R <- sapply(sizes, function(size) measure_dynamic_R(im, n_seams))
+times_dynamic_CPP <- sapply(sizes, function(size) measure_dynamic_CPP(im, n_seams))
+
+# Régression linéaire pour comparer les temps d'exécution pour l'algorithme naïf en R
+model_naive_R <- lm(times_naive_R ~ sizes)
+summary(model_naive_R)
+
+# Régression linéaire pour comparer les temps d'exécution pour l'algorithme naïf en C++
+model_naive_CPP <- lm(times_naive_CPP ~ sizes)
+summary(model_naive_CPP)
+
+# Régression linéaire pour comparer les temps d'exécution pour l'algorithme dynamique en R
+model_dynamic_R <- lm(times_dynamic_R ~ sizes)
+summary(model_dynamic_R)
+
+# Régression linéaire pour comparer les temps d'exécution pour l'algorithme dynamique en C++
+model_dynamic_CPP <- lm(times_dynamic_CPP ~ sizes)
+summary(model_dynamic_CPP)
+
+# Comparaison des temps en graphiques
+par(mfrow = c(2, 2))
+plot(sizes, times_naive_R, main = "Naïf R", xlab = "Taille de l'image", ylab = "Temps (s)", type = "b")
+plot(sizes, times_naive_CPP, main = "Naïf C++", xlab = "Taille de l'image", ylab = "Temps (s)", type = "b")
+plot(sizes, times_dynamic_R, main = "Dynamique R", xlab = "Taille de l'image", ylab = "Temps (s)", type = "b")
+plot(sizes, times_dynamic_CPP, main = "Dynamique C++", xlab = "Taille de l'image", ylab = "Temps (s)", type = "b")
+
+```
+```{r}
+# Charger l'image d'exemple
+im <- load.example("parrots")
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme naïf en R
+measure_naive_R <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- reduce_image_seams(im, n_seams)
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Fonction pour mesurer les temps d'exécution pour l'algorithme dynamique en R
+measure_dynamic_R <- function(im, n_seams) {
+  start_time <- Sys.time()
+  im_reduite <- reduce_dynamic_image_seams(im, n_seams) 
+  end_time <- Sys.time()
+  return(as.numeric(difftime(end_time, start_time, units = "secs")))
+}
+
+# Simulation des tailles d'image
+sizes <- c(100, 200, 300, 400, 500)
+
+n_seams <- 20
+
+# Mesurer les temps d'exécution pour les algorithmes naïf et dynamique en R
+times_naive_R <- sapply(sizes, function(size) measure_naive_R(im, n_seams))
+times_dynamic_R <- sapply(sizes, function(size) measure_dynamic_R(im, n_seams))
+
+# Afficher les résultats
+print(times_naive_R)
+print(times_dynamic_R)
+
+```
+

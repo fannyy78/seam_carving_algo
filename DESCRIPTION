@@ -1,0 +1,17 @@
+Package: M2algorithmique
+Type: Package
+Title: Seam Carving for Image Resizing
+Version: 1.0
+Author: SAMMUT MAGRANGE
+Maintainer: Alix Madrange <alix.madrange@gmail.com>
+Description: Seam carving is an image resizing technique that adjusts the content of the image to preserve important features while reducing its size.
+License: GPL-3
+Encoding: UTF-8
+Imports: imager, Rcpp
+LinkingTo:Rcpp
+Depends:
+    R (>= 4.0.0)
+LazyData: true
+RoxygenNote: 7.3.2
+
+
